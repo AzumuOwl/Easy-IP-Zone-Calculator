@@ -1,89 +1,95 @@
-const deviceList = document.getElementById('deviceList');
-const addDeviceBtn = document.getElementById('addDevice');
-const calculateBtn = document.getElementById('calculateIPs');
-const resultDiv = document.getElementById('result');
-const showSubnetBtn = document.getElementById('showSubnet');
-const subnetInfoDiv = document.getElementById('subnetInfo');
+function ipToInt(ip) {
+    return ip.split('.').reduce((acc, octet) => (acc << 8) + parseInt(octet), 0) >>> 0;
+}
+function intToIp(int) {
+    return [(int >>> 24), (int >> 16 & 255), (int >> 8 & 255), (int & 255)].join('.');
+}
 
-let deviceCount = 0;
-
-// Add device input
-addDeviceBtn.addEventListener('click', () => {
-    deviceCount++;
+function addZone() {
+    const container = document.getElementById('zonesContainer');
+    const count = container.children.length + 1;
     const div = document.createElement('div');
-    div.classList.add('device');
-    div.innerHTML = `
-        <label>Device ${deviceCount} Name:</label>
-        <input type="text" class="deviceName" placeholder="Router, PC">
-        <label>Number of IPs:</label>
-        <input type="number" class="deviceIPCount" placeholder="1" min="1">
-        <button class="removeDevice">Remove</button>
-    `;
-    deviceList.appendChild(div);
-
-    div.querySelector('.removeDevice').addEventListener('click', () => {
-        div.remove();
-    });
-});
-
-// Convert IP to number
-function ipToNumber(ip) {
-    return ip.split('.').reduce((acc, octet) => acc * 256 + parseInt(octet), 0);
+    div.className = 'zone-item';
+    div.innerHTML = `<input type="number" placeholder="Hosts for Zone ${count}" class="zone-host" min="1">
+                     <button type="button" onclick="removeZone(this)">-</button>`;
+    container.appendChild(div);
 }
 
-// Convert number to IP
-function numberToIp(num) {
-    return [
-        (num >> 24) & 255,
-        (num >> 16) & 255,
-        (num >> 8) & 255,
-        num & 255
+function removeZone(button) {
+    const container = document.getElementById('zonesContainer');
+    if(container.children.length > 1) {
+        container.removeChild(button.parentElement);
+        updateZonePlaceholders();
+    } else {
+        alert("ต้องมี Zone อย่างน้อย 1 Zone");
+    }
+}
+
+function updateZonePlaceholders() {
+    const inputs = document.querySelectorAll('.zone-host');
+    inputs.forEach((input, index) => {
+        input.placeholder = `Hosts for Zone ${index + 1}`;
+    });
+}
+
+// ฟังก์ชันคำนวณ Subnet Mask จากจำนวน Host
+function getSubnetMask(hosts) {
+    let hostBits = 1;
+    while ((2 ** hostBits - 2) < hosts) {
+        hostBits++;
+    }
+    const cidr = 32 - hostBits;
+    let mask = 0xffffffff << hostBits;
+    mask = mask >>> 0;
+    const subnetMask = [
+        (mask >>> 24) & 255,
+        (mask >>> 16) & 255,
+        (mask >>> 8) & 255,
+        mask & 255
     ].join('.');
+    return {subnetMask, cidr};
 }
 
-// Calculate subnet info
-function calculateSubnet(baseIp, mask) {
-    const baseNum = ipToNumber(baseIp);
-    const maskNum = ipToNumber(mask);
-    const network = baseNum & maskNum;
-    const broadcast = network | (~maskNum >>> 0);
-    const firstHost = network + 1;
-    const lastHost = broadcast - 1;
-    return { network: numberToIp(network), broadcast: numberToIp(broadcast), firstHost: numberToIp(firstHost), lastHost: numberToIp(lastHost) };
-}
-
-// Show subnet info
-showSubnetBtn.addEventListener('click', () => {
+function calculateZones() {
     const baseIp = document.getElementById('baseIp').value;
-    const mask = document.getElementById('subnetMask').value;
-    const info = calculateSubnet(baseIp, mask);
-    subnetInfoDiv.innerHTML = `
-        <strong>Network:</strong> ${info.network} <br>
-        <strong>Broadcast:</strong> ${info.broadcast} <br>
-        <strong>Host Range:</strong> ${info.firstHost} - ${info.lastHost}
-    `;
-});
+    const resultDiv = document.getElementById('result');
+    resultDiv.innerHTML = '';
 
-// Generate IPs for devices
-calculateBtn.addEventListener('click', () => {
-    const baseIp = document.getElementById('baseIp').value;
-    const mask = document.getElementById('subnetMask').value;
-    const deviceNames = document.querySelectorAll('.deviceName');
-    const deviceCounts = document.querySelectorAll('.deviceIPCount');
+    if(!baseIp) {
+        resultDiv.innerHTML = "<p style='color:red'>กรุณากรอก Base IP</p>";
+        return;
+    }
 
-    let currentIp = ipToNumber(calculateSubnet(baseIp, mask).firstHost);
-    let output = '';
+    const zoneInputs = document.querySelectorAll('.zone-host');
+    const zoneHostsArr = Array.from(zoneInputs).map(input => parseInt(input.value));
 
-    deviceNames.forEach((nameInput, i) => {
-        const name = nameInput.value || `Device${i+1}`;
-        const count = parseInt(deviceCounts[i].value) || 1;
-        let ips = [];
-        for(let j=0;j<count;j++){
-            ips.push(numberToIp(currentIp));
-            currentIp++;
-        }
-        output += `<strong>${name}</strong>: ${ips.join(', ')}<br>`;
+    if(zoneHostsArr.some(isNaN) || zoneHostsArr.some(h => h <= 0)) {
+        resultDiv.innerHTML = "<p style='color:red'>กรุณากรอกจำนวน Hosts ให้ถูกต้องทุก Zone</p>";
+        return;
+    }
+
+    let currentNetwork = ipToInt(baseIp);
+
+    zoneHostsArr.forEach((hosts, i) => {
+        const {subnetMask, cidr} = getSubnetMask(hosts);
+        const totalHosts = 2 ** (32 - cidr);
+        const networkIP = intToIp(currentNetwork);
+        const broadcastIP = intToIp(currentNetwork + totalHosts - 1);
+        const firstHost = intToIp(currentNetwork + 1);
+        const lastHost = intToIp(currentNetwork + totalHosts - 2);
+
+        const zoneDiv = document.createElement('div');
+        zoneDiv.className = 'zone';
+        zoneDiv.innerHTML = `
+            <h3>Zone ${i + 1}</h3>
+            <p>Hosts: ${hosts}</p>
+            <p>Subnet Mask: ${subnetMask} (/ ${cidr})</p>
+            <p>Network: ${networkIP}</p>
+            <p>Broadcast: ${broadcastIP}</p>
+            <p>Host Range: ${firstHost} - ${lastHost}</p>
+        `;
+        resultDiv.appendChild(zoneDiv);
+
+        currentNetwork += totalHosts;
     });
-
-    resultDiv.innerHTML = output;
-});
+}
